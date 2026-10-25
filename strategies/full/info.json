@@ -1,0 +1,4 @@
+{
+  "name": "Полный обход",
+  "description": "Raw TLS по спискам, TCP split + disorder, отдельный профиль API YouTube. Без подмены DNS."
+}

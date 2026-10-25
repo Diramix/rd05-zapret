@@ -1,0 +1,16 @@
+*.log
+*.pid
+*.tmp
+*.bak
+*.backup
+*.before-*
+*.tar.gz
+*.zip
+*~
+.disabled
+.DS_Store
+.idea/
+.vscode/
+build/
+__pycache__/
+*.py[cod]

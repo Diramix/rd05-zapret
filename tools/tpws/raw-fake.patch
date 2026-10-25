@@ -1,0 +1,147 @@
+diff --git a/tpws/params.h b/tpws/params.h
+index a0f2a11..0266cd0 100644
+--- a/tpws/params.h
++++ b/tpws/params.h
+@@ -58,6 +58,11 @@ struct desync_profile
+ 	int split_count;
+ 	struct proto_pos tlsrec;
+ 
++	uint8_t raw_fake[1200];
++	size_t raw_fake_size;
++	uint8_t raw_fake_ttl;
++	bool raw_fake_md5;
++
+ 	int mss;
+ 
+ 	bool tamper_start_n,tamper_cutoff_n;
+diff --git a/tpws/sec.c b/tpws/sec.c
+index ed6bd4d..07acc81 100644
+--- a/tpws/sec.c
++++ b/tpws/sec.c
+@@ -224,7 +224,10 @@ int getmaxcap(void)
+ }
+ bool dropcaps(void)
+ {
+-	uint64_t caps = 0;
++    uint64_t caps = 0;
++    struct desync_profile_list *profile;
++    LIST_FOREACH(profile, &params.desync_profiles, next)
++        if (profile->dp.raw_fake_size) caps = (1ULL << CAP_NET_ADMIN) | (1ULL << CAP_NET_RAW);
+ 	int maxcap = getmaxcap();
+ 
+ 	if (setpcap(caps|(1<<CAP_SETPCAP)))
+diff --git a/tpws/tamper.h b/tpws/tamper.h
+index 5b5aabf..26561fe 100644
+--- a/tpws/tamper.h
++++ b/tpws/tamper.h
+@@ -14,6 +14,7 @@ typedef struct
+ 	// common state
+ 	t_l7proto l7proto;
+ 	bool bTamperInCutoff;
++	bool raw_fake_sent;
+ 	bool b_host_checked,b_host_matches,b_ah_check;
+ 	bool hostname_discovered;
+ 	bool hostname_is_ip;
+diff --git a/tpws/tpws.c b/tpws/tpws.c
+index 69e6d39..1a41171 100644
+--- a/tpws/tpws.c
++++ b/tpws/tpws.c
+@@ -46,6 +46,7 @@
+ #include "helpers.h"
+ #include "gzip.h"
+ #include "pools.h"
++#include "raw_fake.h"
+ 
+ 
+ #define MAX_CONFIG_FILE_SIZE 16384
+@@ -273,6 +274,9 @@ static void exithelp(void)
+ 		" --methodspace\t\t\t\t; add extra space after method\n"
+ 		" --methodeol\t\t\t\t; add end-of-line before method\n"
+ 		" --unixeol\t\t\t\t; replace 0D0A to 0A\n"
++		" --raw-fake=<file>\t\t\t; inject a raw TLS payload before the original ClientHello\n"
++		" --raw-fake-ttl=<1..255>\t\t; raw payload TTL, default 4\n"
++		" --raw-fake-md5\t\t\t; attach a raw TCP MD5 signature\n"
+ 		" --tlsrec=N|-N|marker+N|marker-N\t; make 2 TLS records. split records at specified position.\n"
+ #ifdef __linux__
+ 		" --mss=<int>\t\t\t\t; set client MSS. forces server to split messages but significantly decreases speed !\n"
+@@ -673,6 +677,9 @@ enum opt_indices {
+ 	IDX_METHODEOL,
+ 	IDX_HOSTTAB,
+ 	IDX_UNIXEOL,
++	IDX_RAW_FAKE,
++	IDX_RAW_FAKE_TTL,
++	IDX_RAW_FAKE_MD5,
+ 	IDX_TLSREC,
+ 	IDX_TLSREC_POS,
+ 	IDX_HOSTLIST,
+@@ -766,6 +773,9 @@ static const struct option long_options[] = {
+ 	[IDX_METHODEOL] = {"methodeol", no_argument, 0, 0},
+ 	[IDX_HOSTTAB] = {"hosttab", no_argument, 0, 0},
+ 	[IDX_UNIXEOL] = {"unixeol", no_argument, 0, 0},
++	[IDX_RAW_FAKE] = {"raw-fake", required_argument, 0, 0},
++	[IDX_RAW_FAKE_TTL] = {"raw-fake-ttl", required_argument, 0, 0},
++	[IDX_RAW_FAKE_MD5] = {"raw-fake-md5", no_argument, 0, 0},
+ 	[IDX_TLSREC] = {"tlsrec", required_argument, 0, 0},
+ 	[IDX_TLSREC_POS] = {"tlsrec-pos", required_argument, 0, 0},
+ 	[IDX_HOSTLIST] = {"hostlist", required_argument, 0, 0},
+@@ -1177,6 +1187,23 @@ void parse_params(int argc, char *argv[])
+ 			dp->unixeol = true;
+ 			params.tamper = true;
+ 			break;
++        case IDX_RAW_FAKE:
++            dp->raw_fake_size = sizeof(dp->raw_fake);
++            if (!load_file(optarg, dp->raw_fake, &dp->raw_fake_size) || !IsTLSClientHello(dp->raw_fake, dp->raw_fake_size, false))
++            {
++                DLOG_ERR("Invalid raw TLS payload\n");
++                exit_clean(1);
++            }
++            params.tamper = true;
++            break;
++        case IDX_RAW_FAKE_TTL:
++            i = atoi(optarg);
++            if (i < 1 || i > 255) { DLOG_ERR("Invalid raw fake TTL\n"); exit_clean(1); }
++            dp->raw_fake_ttl = i;
++            break;
++        case IDX_RAW_FAKE_MD5:
++            dp->raw_fake_md5 = true;
++            break;
+ 		case IDX_TLSREC:
+ 			if (!parse_split_pos(optarg, &dp->tlsrec) && !parse_tlspos(optarg, &dp->tlsrec))
+ 			{
+@@ -1659,6 +1686,11 @@ void parse_params(int argc, char *argv[])
+ 			DLOG_ERR("Cannot split with --skip-nodelay\n");
+ 			exit_clean(1);
+ 		}
++        if (dp->raw_fake_size && !raw_fake_supported())
++        {
++            DLOG_PERROR("raw fake requires TCP_REPAIR and raw sockets");
++            exit_clean(1);
++        }
+ 		if (params.droproot && dp->hostlist_auto && chown(dp->hostlist_auto->filename, params.uid, -1))
+ 			DLOG_ERR("could not chown %s. auto hostlist file may not be writable after privilege drop\n", dp->hostlist_auto->filename);
+ #ifdef __linux__
+diff --git a/tpws/tpws_conn.c b/tpws/tpws_conn.c
+index f74952a..1f49c96 100644
+--- a/tpws/tpws_conn.c
++++ b/tpws/tpws_conn.c
+@@ -24,6 +24,7 @@
+ #include "tpws_conn.h"
+ #include "redirect.h"
+ #include "tamper.h"
++#include "raw_fake.h"
+ #include "socks.h"
+ #include "helpers.h"
+ #include "hostlist.h"
+@@ -1133,6 +1134,12 @@ static void tamper(tproxy_conn_t *conn, uint8_t *segment, size_t segment_buffer_
+ 		{
+ 			if (in_tamper_out_range(conn))
+ 				tamper_out(&conn->track,(struct sockaddr*)&conn->dest,segment,segment_buffer_size,segment_size,multisplit_pos,multisplit_count,split_flags);
++            if (!conn->track.raw_fake_sent && conn->track.dp && conn->track.dp->raw_fake_size && conn->track.l7proto == TLS && conn_partner_alive(conn))
++            {
++                conn->track.raw_fake_sent = true;
++                if (!raw_fake_send(conn->partner->fd, conn->track.dp->raw_fake, conn->track.dp->raw_fake_size, conn->track.dp->raw_fake_ttl ? conn->track.dp->raw_fake_ttl : 4, conn->track.dp->raw_fake_md5))
++                    DLOG_PERROR("raw_fake_send");
++            }
+ 		}
+ 	}
+ }
