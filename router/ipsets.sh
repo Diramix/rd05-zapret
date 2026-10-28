@@ -51,6 +51,9 @@ new=/tmp/rd05-dnsmasq.new
     while IFS= read -r domain; do
         printf 'ipset=/%s/RD05_TARGET4,RD05_TARGET6\n' "$domain"
     done < "$include"
+    for domain in web.whatsapp.com www.whatsapp.com v.whatsapp.net mmg.whatsapp.net static.whatsapp.net; do
+        printf 'address=/%s/57.144.245.32\n' "$domain"
+    done
 } > "$new"
 dnsmasq --test --conf-file="$new" > /dev/null 2>&1
 

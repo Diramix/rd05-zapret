@@ -1,24 +1,22 @@
 diff --git a/tpws/params.h b/tpws/params.h
-index a0f2a11..0266cd0 100644
 --- a/tpws/params.h
 +++ b/tpws/params.h
-@@ -58,6 +58,11 @@ struct desync_profile
+@@ -57,6 +57,11 @@
+ 	struct proto_pos splits[MAX_SPLITS];
  	int split_count;
  	struct proto_pos tlsrec;
- 
++
 +	uint8_t raw_fake[1200];
 +	size_t raw_fake_size;
 +	uint8_t raw_fake_ttl;
 +	bool raw_fake_md5;
-+
+ 
  	int mss;
  
- 	bool tamper_start_n,tamper_cutoff_n;
 diff --git a/tpws/sec.c b/tpws/sec.c
-index ed6bd4d..07acc81 100644
 --- a/tpws/sec.c
 +++ b/tpws/sec.c
-@@ -224,7 +224,10 @@ int getmaxcap(void)
+@@ -224,7 +224,10 @@
  }
  bool dropcaps(void)
  {
@@ -31,10 +29,9 @@ index ed6bd4d..07acc81 100644
  
  	if (setpcap(caps|(1<<CAP_SETPCAP)))
 diff --git a/tpws/tamper.h b/tpws/tamper.h
-index 5b5aabf..26561fe 100644
 --- a/tpws/tamper.h
 +++ b/tpws/tamper.h
-@@ -14,6 +14,7 @@ typedef struct
+@@ -14,6 +14,7 @@
  	// common state
  	t_l7proto l7proto;
  	bool bTamperInCutoff;
@@ -43,10 +40,9 @@ index 5b5aabf..26561fe 100644
  	bool hostname_discovered;
  	bool hostname_is_ip;
 diff --git a/tpws/tpws.c b/tpws/tpws.c
-index 69e6d39..1a41171 100644
 --- a/tpws/tpws.c
 +++ b/tpws/tpws.c
-@@ -46,6 +46,7 @@
+@@ -46,22 +46,25 @@
  #include "helpers.h"
  #include "gzip.h"
  #include "pools.h"
@@ -54,37 +50,69 @@ index 69e6d39..1a41171 100644
  
  
  #define MAX_CONFIG_FILE_SIZE 16384
-@@ -273,6 +274,9 @@ static void exithelp(void)
+ 
+ struct params_s params;
+-static bool bReload=false;
++static volatile sig_atomic_t bReload=0;
+ 
+ static void onhup(int sig)
+ {
+-	printf("HUP received ! Lists will be reloaded.\n");
+-	bReload=true;
++	bReload=1;
+ }
+ void ReloadCheck()
+ {
+ 	if (bReload)
+ 	{
++		bReload=0;
++		DLOG_CONDUP("HUP received ! Lists will be reloaded.\n");
++		if (!raw_fake_sni_reload()) DLOG_PERROR("raw fake SNI reload");
+ 		ResetAllHostlistsModTime();
+ 		if (!LoadAllHostLists())
+ 		{
+@@ -74,7 +77,6 @@
+ 			DLOG_ERR("ipset load failed. this is fatal.\n");
+ 			exit(1);
+ 		}
+-		bReload=false;
+ 	}
+ }
+ 
+@@ -273,6 +275,10 @@
  		" --methodspace\t\t\t\t; add extra space after method\n"
  		" --methodeol\t\t\t\t; add end-of-line before method\n"
  		" --unixeol\t\t\t\t; replace 0D0A to 0A\n"
 +		" --raw-fake=<file>\t\t\t; inject a raw TLS payload before the original ClientHello\n"
 +		" --raw-fake-ttl=<1..255>\t\t; raw payload TTL, default 4\n"
 +		" --raw-fake-md5\t\t\t; attach a raw TCP MD5 signature\n"
++		" --raw-fake-sni-list=<file>\t\t; choose a random fake SNI for each connection\n"
  		" --tlsrec=N|-N|marker+N|marker-N\t; make 2 TLS records. split records at specified position.\n"
  #ifdef __linux__
  		" --mss=<int>\t\t\t\t; set client MSS. forces server to split messages but significantly decreases speed !\n"
-@@ -673,6 +677,9 @@ enum opt_indices {
+@@ -673,6 +679,10 @@
  	IDX_METHODEOL,
  	IDX_HOSTTAB,
  	IDX_UNIXEOL,
 +	IDX_RAW_FAKE,
 +	IDX_RAW_FAKE_TTL,
 +	IDX_RAW_FAKE_MD5,
++	IDX_RAW_FAKE_SNI_LIST,
  	IDX_TLSREC,
  	IDX_TLSREC_POS,
  	IDX_HOSTLIST,
-@@ -766,6 +773,9 @@ static const struct option long_options[] = {
+@@ -766,6 +776,10 @@
  	[IDX_METHODEOL] = {"methodeol", no_argument, 0, 0},
  	[IDX_HOSTTAB] = {"hosttab", no_argument, 0, 0},
  	[IDX_UNIXEOL] = {"unixeol", no_argument, 0, 0},
 +	[IDX_RAW_FAKE] = {"raw-fake", required_argument, 0, 0},
 +	[IDX_RAW_FAKE_TTL] = {"raw-fake-ttl", required_argument, 0, 0},
 +	[IDX_RAW_FAKE_MD5] = {"raw-fake-md5", no_argument, 0, 0},
++	[IDX_RAW_FAKE_SNI_LIST] = {"raw-fake-sni-list", required_argument, 0, 0},
  	[IDX_TLSREC] = {"tlsrec", required_argument, 0, 0},
  	[IDX_TLSREC_POS] = {"tlsrec-pos", required_argument, 0, 0},
  	[IDX_HOSTLIST] = {"hostlist", required_argument, 0, 0},
-@@ -1177,6 +1187,23 @@ void parse_params(int argc, char *argv[])
+@@ -1177,6 +1191,30 @@
  			dp->unixeol = true;
  			params.tamper = true;
  			break;
@@ -97,6 +125,13 @@ index 69e6d39..1a41171 100644
 +            }
 +            params.tamper = true;
 +            break;
++        case IDX_RAW_FAKE_SNI_LIST:
++            if (!raw_fake_sni_load(optarg))
++            {
++                DLOG_PERROR("Invalid raw fake SNI list");
++                exit_clean(1);
++            }
++            break;
 +        case IDX_RAW_FAKE_TTL:
 +            i = atoi(optarg);
 +            if (i < 1 || i > 255) { DLOG_ERR("Invalid raw fake TTL\n"); exit_clean(1); }
@@ -108,7 +143,7 @@ index 69e6d39..1a41171 100644
  		case IDX_TLSREC:
  			if (!parse_split_pos(optarg, &dp->tlsrec) && !parse_tlspos(optarg, &dp->tlsrec))
  			{
-@@ -1659,6 +1686,11 @@ void parse_params(int argc, char *argv[])
+@@ -1659,6 +1697,11 @@
  			DLOG_ERR("Cannot split with --skip-nodelay\n");
  			exit_clean(1);
  		}
@@ -121,7 +156,6 @@ index 69e6d39..1a41171 100644
  			DLOG_ERR("could not chown %s. auto hostlist file may not be writable after privilege drop\n", dp->hostlist_auto->filename);
  #ifdef __linux__
 diff --git a/tpws/tpws_conn.c b/tpws/tpws_conn.c
-index f74952a..1f49c96 100644
 --- a/tpws/tpws_conn.c
 +++ b/tpws/tpws_conn.c
 @@ -24,6 +24,7 @@
@@ -132,7 +166,7 @@ index f74952a..1f49c96 100644
  #include "socks.h"
  #include "helpers.h"
  #include "hostlist.h"
-@@ -1133,6 +1134,12 @@ static void tamper(tproxy_conn_t *conn, uint8_t *segment, size_t segment_buffer_
+@@ -1133,6 +1134,12 @@
  		{
  			if (in_tamper_out_range(conn))
  				tamper_out(&conn->track,(struct sockaddr*)&conn->dest,segment,segment_buffer_size,segment_size,multisplit_pos,multisplit_count,split_flags);

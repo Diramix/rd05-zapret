@@ -2,11 +2,73 @@
 #include "raw_fake.h"
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <linux/tcp.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+static char sni_names[64][254];
+static size_t sni_count;
+static char sni_path[PATH_MAX];
+
+static bool valid_sni(const char *name)
+{
+    size_t length = strlen(name), label = 0;
+    if (!length || length > 253) return false;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = name[i];
+        if (c == '.') {
+            if (!label || name[i - 1] == '-') return false;
+            label = 0;
+        } else {
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || (c == '-' && label))) return false;
+            if (++label > 63) return false;
+        }
+    }
+    return label && name[length - 1] != '-';
+}
+
+bool raw_fake_sni_load(const char *path)
+{
+    if (!path || strlen(path) >= sizeof(sni_path)) { errno = EINVAL; return false; }
+    FILE *file = fopen(path, "r");
+    if (!file) return false;
+    char names[64][254] = {{0}}, line[512];
+    size_t count = 0;
+    bool valid = true;
+    while (fgets(line, sizeof(line), file)) {
+        if (!strchr(line, '\n') && !feof(file)) { valid = false; break; }
+        char *comment = strchr(line, '#');
+        if (comment) *comment = 0;
+        char *start = line + strspn(line, " \t\r\n");
+        size_t length = strlen(start);
+        while (length && strchr(" \t\r\n", start[length - 1])) start[--length] = 0;
+        if (!length) continue;
+        if (count == 64 || !valid_sni(start)) { valid = false; break; }
+        memcpy(names[count++], start, length + 1);
+    }
+    if (ferror(file)) valid = false;
+    fclose(file);
+    if (!valid || !count) { errno = EINVAL; return false; }
+    memcpy(sni_names, names, sizeof(names));
+    sni_count = count;
+    memmove(sni_path, path, strlen(path) + 1);
+    return true;
+}
+
+bool raw_fake_sni_reload(void)
+{
+    return !sni_path[0] || raw_fake_sni_load(sni_path);
+}
+
+static unsigned int get16(const uint8_t *p)
+{
+    return ((unsigned int)p[0] << 8) | p[1];
+}
 
 static void put16(uint8_t *p, unsigned int value)
 {
@@ -20,6 +82,68 @@ static void put32(uint8_t *p, uint32_t value)
     p[1] = value >> 16;
     p[2] = value >> 8;
     p[3] = value;
+}
+
+bool raw_fake_payload(const uint8_t *payload, size_t size, uint8_t *output, size_t *output_size)
+{
+    if (!payload || !output || !output_size || size > *output_size) { errno = EINVAL; return false; }
+    if (!sni_count) {
+        memcpy(output, payload, size);
+        *output_size = size;
+        return true;
+    }
+    if (size < 44 || payload[0] != 22 || payload[5] != 1 || get16(payload + 3) + 5 != size ||
+        (((size_t)payload[6] << 16) | ((size_t)payload[7] << 8) | payload[8]) + 9 != size) {
+        errno = EINVAL;
+        return false;
+    }
+    size_t position = 43;
+    position += 1 + payload[position];
+    if (position + 2 > size) { errno = EINVAL; return false; }
+    position += 2 + get16(payload + position);
+    if (position >= size) { errno = EINVAL; return false; }
+    position += 1 + payload[position];
+    if (position + 2 > size) { errno = EINVAL; return false; }
+    size_t extensions = position;
+    size_t end = position + 2 + get16(payload + position);
+    if (end != size) { errno = EINVAL; return false; }
+    position += 2;
+    while (position + 4 <= end) {
+        size_t length = get16(payload + position + 2);
+        if (position + 4 + length > end) break;
+        if (!get16(payload + position)) {
+            if (length < 5 || get16(payload + position + 4) != length - 2 ||
+                payload[position + 6] || get16(payload + position + 7) != length - 5) break;
+            uint32_t random;
+            int source = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+            if (source < 0) return false;
+            ssize_t received;
+            do { received = read(source, &random, sizeof(random)); } while (received < 0 && errno == EINTR);
+            int saved = errno;
+            close(source);
+            if (received != sizeof(random)) { errno = received < 0 ? saved : EIO; return false; }
+            const char *name = sni_names[random % sni_count];
+            size_t old_length = length - 5, new_length = strlen(name);
+            size_t total = size - old_length + new_length;
+            if (total > *output_size || total > 1200) { errno = EOVERFLOW; return false; }
+            size_t host = position + 9;
+            memcpy(output, payload, host);
+            memcpy(output + host, name, new_length);
+            memcpy(output + host + new_length, payload + host + old_length, size - host - old_length);
+            put16(output + 3, total - 5);
+            output[6] = (total - 9) >> 16;
+            put16(output + 7, total - 9);
+            put16(output + extensions, get16(payload + extensions) - old_length + new_length);
+            put16(output + position + 2, new_length + 5);
+            put16(output + position + 4, new_length + 3);
+            put16(output + position + 7, new_length);
+            *output_size = total;
+            return true;
+        }
+        position += 4 + length;
+    }
+    errno = EINVAL;
+    return false;
 }
 
 static unsigned int checksum(const uint8_t *p, size_t size)
@@ -71,6 +195,13 @@ static bool socket_sequences(int fd, uint32_t *sequence, uint32_t *acknowledgmen
 bool raw_fake_send(int fd, const uint8_t *payload, size_t size, uint8_t ttl, bool md5)
 {
     if (!size || size > 1200 || !ttl) { errno = EINVAL; return false; }
+    uint8_t randomized[1200];
+    if (sni_count) {
+        size_t randomized_size = sizeof(randomized);
+        if (!raw_fake_payload(payload, size, randomized, &randomized_size)) return false;
+        payload = randomized;
+        size = randomized_size;
+    }
     struct sockaddr_storage local, remote;
     if (!socket_address(fd, false, &local) || !socket_address(fd, true, &remote) || local.ss_family != remote.ss_family) return false;
     uint32_t sequence, acknowledgment;

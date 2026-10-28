@@ -34,15 +34,18 @@ rules_ready() {
         case "$family" in
             4)
                 tool=iptables
+                stun_filter='0>>22&0x3C@4>>16=28:65535&&0>>22&0x3C@12=0x2112A442&&0>>22&0x3C@8&0xC0000003=0'
                 ;;
             6)
                 tool=ip6tables
+                stun_filter='44>>16=28:65535&&52=0x2112A442&&48&0xC0000003=0'
                 ;;
         esac
         "$tool" -t nat -C PREROUTING -i br-lan -p tcp -j RD05_TPWS 2> /dev/null || return 1
         "$tool" -t nat -C RD05_TPWS -p tcp -m set --match-set "RD05_TARGET$family" dst -j REDIRECT --to-ports 10813 2> /dev/null || return 1
         "$tool" -t nat -C PREROUTING -i br-lan -p udp --dport 53 -j REDIRECT --to-ports 53 2> /dev/null || return 1
         "$tool" -C FORWARD -i br-lan -o eth2 -p udp --dport 443 -j RD05_QUIC 2> /dev/null || return 1
+        "$tool" -C RD05_QUIC -p udp -m u32 --u32 "$stun_filter" -j RETURN 2> /dev/null || return 1
     done
     return 0
 }

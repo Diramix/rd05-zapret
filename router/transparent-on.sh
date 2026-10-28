@@ -45,13 +45,16 @@ for family in 4 6; do
     case "$family" in
         4)
             tool=iptables
+            stun_filter='0>>22&0x3C@4>>16=28:65535&&0>>22&0x3C@12=0x2112A442&&0>>22&0x3C@8&0xC0000003=0'
             ;;
         6)
             tool=ip6tables
+            stun_filter='44>>16=28:65535&&52=0x2112A442&&48&0xC0000003=0'
             ;;
     esac
     "$tool" -N RD05_QUIC
     "$tool" -A RD05_QUIC -m set --match-set "RD05_EXCLUDE$family" dst -j RETURN
+    "$tool" -A RD05_QUIC -p udp -m u32 --u32 "$stun_filter" -j RETURN
     "$tool" -A RD05_QUIC -m set --match-set "RD05_TARGET$family" dst -j REJECT
     "$tool" -I FORWARD 1 -i br-lan -o eth2 -p udp --dport 443 -j RD05_QUIC
     for protocol in udp tcp; do

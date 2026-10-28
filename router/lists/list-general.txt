@@ -33,9 +33,6 @@ discord-activities.com
 discordactivities.com
 discordapp.com
 discordapp.net
-gateway.discord.gg
-cdn.discordapp.com
-media.discordapp.net
 discordcdn.com
 discordmerch.com
 discordpartygames.com
@@ -47,8 +44,12 @@ ffzap.com
 betterttv.net
 7tv.app
 7tv.io
-
 speedtest.net
-www.speedtest.net
-results.speedtest.net
-speedtest-univ-results-api.speedtest.net
+whatsapp.com
+whatsapp.net
+signal.org
+signal.art
+signal.group
+signal.link
+signal.me
+signal.tube
