@@ -105,7 +105,7 @@ class ServiceTests(unittest.TestCase):
         router.exists.return_value = True
         router.read.return_value = b'0 0 * * * echo other\n'
         router.text.return_value = '123'
-        with tempfile.TemporaryDirectory() as directory, patch.object(installer, 'quiesce'):
+        with tempfile.TemporaryDirectory() as directory, patch.object(installer, 'quiesce'), patch.object(installer, 'migrate_previous_proxy'):
             payload = Path(directory) / 'router'
             strategies.prepare_payload(payload, 'full')
             installer.apply(router, '/tmp/stage/router', payload)
@@ -116,6 +116,25 @@ class ServiceTests(unittest.TestCase):
         cron = router.write.call_args.args[1]
         self.assertIn(b'echo other', cron)
         self.assertEqual(cron.count(installer.CRON_ENTRY.encode()), 1)
+
+    def test_migrate_previous_proxy_preserves_unrelated_cron(self):
+        router = Mock()
+        router.exists.return_value = True
+        old_script = b'tg-ws-proxy-rs/releases/download/v2.7.0/ /tmp/tg-ws-proxy-rs.pid'
+        router.read.side_effect = [old_script, b'* * * * * /data/tg-ws-proxy-rs/ensure.sh\n0 0 * * * echo keep\n']
+        with patch.object(installer.time, 'sleep'):
+            installer.migrate_previous_proxy(router)
+        router.write.assert_called_once_with(installer.CRONTAB, b'0 0 * * * echo keep\n')
+        router.remove.assert_any_call('/data/tg-ws-proxy-rs')
+
+    def test_migrate_rejects_unrecognized_previous_proxy(self):
+        router = Mock()
+        router.exists.return_value = True
+        router.read.return_value = b'unrelated setup'
+        with self.assertRaises(ValueError):
+            installer.migrate_previous_proxy(router)
+        router.remove.assert_not_called()
+        router.write.assert_not_called()
 
     def test_uninstall_preserves_other_cron_jobs(self):
         router = Mock()

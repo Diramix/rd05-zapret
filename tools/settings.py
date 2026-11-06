@@ -7,5 +7,5 @@ CRON_ENTRY = f'* * * * * /bin/sh {ROOT}/ensure.sh >/tmp/rd05-ensure.log 2>&1'
 REQUIRED_COMMANDS = (
     'iptables', 'ip6tables', 'ip', 'awk', 'sed', 'readlink', 'md5sum',
     'ipset', 'dnsmasq', 'cmp', 'nslookup', 'curl', 'jsonfilter',
-    'tar', 'chmod', 'cp', 'rm', 'mkdir', 'cat', 'test', 'du', 'df', 'sh', 'kill',
+    'openssl', 'netstat', 'tar', 'chmod', 'cp', 'rm', 'mkdir', 'cat', 'test', 'du', 'df', 'sh', 'kill',
 )

@@ -16,5 +16,9 @@ if [ -r /tmp/rd05-watchdog.pid ]; then
     kill "$pid" 2> /dev/null || true
 fi
 
+if [ -f "$base/tg-proxy.sh" ]; then
+    sh "$base/tg-proxy.sh" stop
+fi
+
 sh "$base/transparent-off.sh"
 echo 'Transparent processing disabled'
