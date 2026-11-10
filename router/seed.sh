@@ -46,7 +46,7 @@ seed() {
     done
 }
 
-for domain in youtubei.googleapis.com www.youtube.com youtube.com discord.com gateway.discord.gg cdn.discordapp.com media.discordapp.net discord.gg discordapp.com discordapp.net discord.media www.speedtest.net results.speedtest.net speedtest-univ-results-api.speedtest.net x.com twitter.com api.x.com api.twitter.com t.co abs.twimg.com pbs.twimg.com video.twimg.com; do
+for domain in youtubei.googleapis.com www.youtube.com youtube.com www.speedtest.net results.speedtest.net speedtest-univ-results-api.speedtest.net; do
     if awk -v domain="$domain" '
         $0 == domain || (length(domain) > length($0) && substr(domain, length(domain) - length($0)) == "." $0) {found = 1; exit}
         END {exit !found}
