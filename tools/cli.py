@@ -7,6 +7,7 @@ import tarfile
 from .installer import install, installed_status, uninstall
 from .menu import menu
 from .router import connect_router, validate_target
+from . import tg_installer
 
 
 def main(argv=None):
@@ -21,6 +22,7 @@ def main(argv=None):
     mode.add_argument('--uninstall', action='store_true', help='Удалить программу и автозапуск')
     mode.add_argument('--status', action='store_true', help='Определить установленную стратегию')
     parser.add_argument('--strategy', default='full', help='Название стратегии (по умолчанию: full)')
+    parser.add_argument('--component', choices=('zapret', 'tg'), default='zapret', help='Компонент для управления (по умолчанию: zapret)')
     parser.add_argument('target', nargs='?', default=None, help='Адрес SSH (необязательно)')
     args = parser.parse_args(argv)
     try:
@@ -33,7 +35,14 @@ def main(argv=None):
         else:
             router = connect_router(args.target)
             try:
-                if args.uninstall:
+                if args.component == 'tg':
+                    if args.uninstall:
+                        tg_installer.uninstall(router)
+                    elif args.status:
+                        print(tg_installer.installed_status(router) or 'Не установлено')
+                    else:
+                        tg_installer.install(router, args.check)
+                elif args.uninstall:
                     uninstall(router)
                 elif args.status:
                     print(installed_status(router) or 'Не установлено')

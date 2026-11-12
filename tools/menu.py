@@ -7,6 +7,7 @@ from .installer import install, installed_status, uninstall
 from .progress import Spinner
 from .router import connect_router
 from .strategies import strategies
+from . import tg_installer
 
 BANNER = r"""
 ░▒▓████████▓▒░░▒▓██████▓▒░░▒▓███████▓▒░░▒▓███████▓▒░░▒▓████████▓▒░▒▓████████▓▒░
@@ -48,10 +49,11 @@ def print_menu(target, status):
     print(BANNER)
     print('=' * 78)
     print(f'Роутер: {target.rsplit("@", 1)[-1]} | Состояние: {status_label(status)}')
-    print('1) Переустановить / обновить' if status else '1) Установить')
+    print('1) Переустановить / обновить Zapret' if status else '1) Установить Zapret')
     print('2) Проверить подключение и состояние')
     if status and status != 'not checked':
         print('3) Полностью удалить программу')
+    print(f'{4 if status and status != "not checked" else 3}) Управление TG WS')
     print('0) Выход')
     print('=' * 78)
     if color:
@@ -90,6 +92,27 @@ def show_error(error):
         print(details.decode('utf-8', errors='replace').strip(), file=sys.stderr, flush=True)
 
 
+def tg_menu(router):
+    while True:
+        status = tg_installer.installed_status(router)
+        print('\nTG WS: ' + (status_label(status) if status else 'не установлено'))
+        print('1) Установить / обновить TG WS')
+        if status:
+            print('2) Удалить TG WS')
+        print('0) Назад')
+        choice = input('Выберите действие: ').strip()
+        if choice == '0':
+            return
+        if choice == '1':
+            tg_installer.install(router)
+            print('TG WS установлен и запущен')
+        elif choice == '2' and status:
+            tg_installer.uninstall(router)
+            print('TG WS удалён')
+        else:
+            print('Неверный пункт меню')
+
+
 def menu(target=None):
     router = connect_router(target)
     target = router.target
@@ -119,6 +142,8 @@ def menu(target=None):
                     print('Удаление программы и автозапуска…', flush=True)
                     uninstall(router)
                     status = auto_check(router)
+                elif choice == ('4' if status and status != 'not checked' else '3'):
+                    tg_menu(router)
                 else:
                     print('Неверный пункт меню')
             except (OSError, ValueError, subprocess.SubprocessError, tarfile.TarError) as error:

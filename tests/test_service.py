@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from tools import auth, build_tpws, cli, installer, menu, strategies
+from tools import auth, build_tpws, cli, installer, menu, strategies, tg_installer
 from tools.router import Router
 
 BASE = Path(__file__).resolve().parents[1]
@@ -103,9 +103,9 @@ class ServiceTests(unittest.TestCase):
     def test_install_replaces_previous_directory(self):
         router = Mock()
         router.exists.return_value = True
-        router.read.return_value = b'0 0 * * * echo other\n'
+        router.read.return_value = b'0 0 * * * echo other\n' + tg_installer.CRON_ENTRY.encode() + b'\n'
         router.text.return_value = '123'
-        with tempfile.TemporaryDirectory() as directory, patch.object(installer, 'quiesce'), patch.object(installer, 'migrate_previous_proxy'):
+        with tempfile.TemporaryDirectory() as directory, patch.object(installer, 'quiesce'):
             payload = Path(directory) / 'router'
             strategies.prepare_payload(payload, 'full')
             installer.apply(router, '/tmp/stage/router', payload)
@@ -115,45 +115,40 @@ class ServiceTests(unittest.TestCase):
         self.assertLess(removal, copy)
         cron = router.write.call_args.args[1]
         self.assertIn(b'echo other', cron)
+        self.assertIn(tg_installer.CRON_ENTRY.encode() + b'\n', cron)
         self.assertEqual(cron.count(installer.CRON_ENTRY.encode()), 1)
+        router.remove.assert_called_once_with(installer.ROOT)
 
-    def test_migrate_previous_proxy_preserves_unrelated_cron(self):
+    def test_install_payload_excludes_shared_tg_script(self):
         router = Mock()
-        router.exists.return_value = True
-        old_script = b'tg-ws-proxy-rs/releases/download/v2.7.0/ /tmp/tg-ws-proxy-rs.pid'
-        router.read.side_effect = [old_script, b'* * * * * /data/tg-ws-proxy-rs/ensure.sh\n0 0 * * * echo keep\n']
-        with patch.object(installer.time, 'sleep'):
-            installer.migrate_previous_proxy(router)
-        router.write.assert_called_once_with(installer.CRONTAB, b'0 0 * * * echo keep\n')
-        router.remove.assert_any_call('/data/tg-ws-proxy-rs')
-
-    def test_migrate_rejects_unrecognized_previous_proxy(self):
-        router = Mock()
-        router.exists.return_value = True
-        router.read.return_value = b'unrelated setup'
-        with self.assertRaises(ValueError):
-            installer.migrate_previous_proxy(router)
-        router.remove.assert_not_called()
-        router.write.assert_not_called()
+        def check_payload(connection, check_only, payload):
+            self.assertIs(connection, router)
+            self.assertFalse(check_only)
+            self.assertFalse((payload / 'tg-proxy.sh').exists())
+            self.assertTrue((payload / 'transparent.conf').exists())
+        with patch.object(installer, 'install_payload', side_effect=check_payload) as install_payload:
+            installer.install(router, False, 'full')
+        install_payload.assert_called_once()
 
     def test_uninstall_preserves_other_cron_jobs(self):
         router = Mock()
         router.text.return_value = '0'
         router.exists.return_value = True
-        router.read.return_value = b'0 0 * * * echo keep\n' + installer.CRON_ENTRY.encode() + b'\n'
+        preserved = b'0 0 * * * echo keep\n' + tg_installer.CRON_ENTRY.encode() + b'\n'
+        router.read.return_value = preserved + installer.CRON_ENTRY.encode() + b'\n'
         router.run.return_value = subprocess.CompletedProcess([], 0)
         with patch.object(installer, 'installed_status'), patch.object(installer, 'quiesce') as stop:
             installer.uninstall(router)
         stop.assert_called_once_with(router)
-        router.write.assert_called_once_with(installer.CRONTAB, b'0 0 * * * echo keep\n')
+        router.write.assert_called_once_with(installer.CRONTAB, preserved)
         router.remove.assert_any_call(installer.ROOT)
         for name in ('RD05_TARGET4', 'RD05_TARGET6', 'RD05_EXCLUDE4', 'RD05_EXCLUDE6'):
             router.run.assert_any_call('ipset', 'destroy', name)
         router.remove.assert_any_call('/tmp/rd05-transparent-runtime.conf')
         router.remove.assert_any_call('/tmp/dnsmasq.d/rd05-zapret.conf')
-        for script in (BASE / 'router').glob('*.sh'):
-            for name in re.findall(r'/tmp/rd05[-A-Za-z0-9_.]+', script.read_text()):
-                router.remove.assert_any_call(name)
+        removed = [call.args[0] for call in router.remove.call_args_list]
+        self.assertNotIn(tg_installer.ROOT, removed)
+        self.assertFalse(any(path.startswith('/tmp/rd05-tg-') for path in removed))
 
     def test_unknown_installation_not_removed(self):
         router = Mock()

@@ -54,7 +54,6 @@ if [ "$running" = 0 ] || ! rules_ready; then
     sh "$base/transparent-on.sh"
 fi
 
-sh "$base/tg-proxy.sh" start || echo "Telegram proxy could not start" >&2
 
 if [ -r /tmp/rd05-watchdog.pid ] && kill -0 "$(cat /tmp/rd05-watchdog.pid)" 2> /dev/null; then
     exit 0

@@ -18,7 +18,8 @@ def check_device(router, source, payload):
     if not re.search(r"option\s+HARDWARE\s+'RD05'", version):
         raise ValueError('Эта программа предназначена для Xiaomi RD05')
     for command in REQUIRED_COMMANDS:
-        router.run('sh', '-c', 'command -v ' + shlex.quote(command))
+        if command not in ('openssl', 'netstat', 'tar'):
+            router.run('sh', '-c', 'command -v ' + shlex.quote(command))
     for tool in ('iptables', 'ip6tables'):
         router.run(tool, '-t', 'nat', '-L', 'PREROUTING', '-n')
     for interface in ('br-lan', 'eth2'):
@@ -51,27 +52,10 @@ def quiesce(router):
     raise ValueError('Фоновая проверка автозапуска ещё работает; повторите позже')
 
 
-def migrate_previous_proxy(router):
-    old = '/data/tg-ws-proxy-rs'
-    script = f'{old}/ensure.sh'
-    if not router.exists(script):
-        return
-    contents = router.read(script)
-    if b'tg-ws-proxy-rs/releases/download/v2.7.0/' not in contents or b'/tmp/tg-ws-proxy-rs.pid' not in contents:
-        raise ValueError('Старая установка Telegram-прокси не распознана')
-    cron = router.read(CRONTAB) if router.exists(CRONTAB) else b''
-    remaining = b''.join(line for line in cron.splitlines(keepends=True) if (old + '/').encode() not in line)
-    if remaining != cron:
-        router.write(CRONTAB, remaining)
-    router.run('sh', '-c', 'if [ -r /tmp/tg-ws-proxy-rs.pid ]; then pid=$(cat /tmp/tg-ws-proxy-rs.pid); case "$pid" in ""|*[!0-9]*) ;; *) if [ "$pid" -gt 1 ] && [ "$(readlink /proc/$pid/exe 2>/dev/null)" = /tmp/tg-ws-proxy-rs ]; then kill "$pid" 2>/dev/null || true; fi ;; esac; fi')
-    for path in (old, '/tmp/tg-ws-proxy-rs', '/tmp/tg-ws-proxy-rs.pid', '/tmp/tg-ws-proxy-rs.log', '/tmp/tg-ws-proxy-rs-ensure.log'):
-        router.remove(path)
-    time.sleep(1)
-
 
 def apply(router, source, payload):
     quiesce(router)
-    migrate_previous_proxy(router)
+
     router.remove(ROOT)
     router.run('mkdir', '-p', ROOT)
     router.copy(f'{source}/.', ROOT + '/')
@@ -86,7 +70,7 @@ def apply(router, source, payload):
     router.chmod('600', CRONTAB)
     router.service('enable')
     router.run('kill', '-0', router.text('cat', '/tmp/rd05-transparent.pid'))
-    router.run('kill', '-0', router.text('cat', '/tmp/rd05-tg-proxy.pid'))
+
     for tool in ('iptables', 'ip6tables'):
         router.run(tool, '-t', 'nat', '-C', 'PREROUTING', '-i', 'br-lan', '-p', 'tcp', '-j', 'RD05_TPWS')
 
@@ -95,6 +79,7 @@ def install(router, check_only=False, strategy='full'):
     with tempfile.TemporaryDirectory(prefix='rd05-payload-') as directory:
         payload = Path(directory) / 'router'
         prepare_payload(payload, strategy)
+        (payload / 'tg-proxy.sh').unlink(missing_ok=True)
         install_payload(router, check_only, payload)
 
 
@@ -166,7 +151,7 @@ def uninstall(router):
         'watchdog.pid', 'watchdog.log', 'seed.pid', 'seed.updated',
         'dns-seed.log', 'dnsmasq-restart.log', 'dnsmasq.new', 'ipsets.signature',
         'domains.include', 'domains.exclude', 'ensure.log', 'ensure.lock',
-        'tg-proxy', 'tg-proxy.pid', 'tg-proxy.tar.gz', 'tg-proxy.new', 'tg-proxy.log',
+
     )
     for name in temporary:
         router.remove('/tmp/rd05-' + name)
